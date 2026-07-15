@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>高通漏洞宽容 SELinux 临时 Root</title>
+  <link rel="stylesheet" href="../Assets/modal.css">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: "微软雅黑", "PingFang SC", sans-serif;
+      background: #0f0f1a;
+      color: #e0e0e0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 2rem 1rem;
+    }
+    h1 {
+      font-size: 22px;
+      margin-bottom: 1.5rem;
+      text-align: center;
+      text-shadow: 0 1px 2px rgba(0,0,0,0.5);
+    }
+    .panel {
+      width: 100%;
+      max-width: 820px;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 16px;
+      padding: 1.2rem;
+      margin-bottom: 1rem;
+      backdrop-filter: blur(8px);
+    }
+    .step-info {
+      font-size: 15px;
+      color: #8ab4f8;
+      font-weight: bold;
+      margin-bottom: 0.8rem;
+      min-height: 24px;
+    }
+    .log-area {
+      width: 100%;
+      background: #06060f;
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 12px;
+      padding: 1rem;
+      font-family: "Consolas", "Monaco", monospace;
+      font-size: 13px;
+      line-height: 1.6;
+      white-space: pre-wrap;
+      word-break: break-all;
+      max-height: 55vh;
+      overflow-y: auto;
+      color: #b0e0b0;
+    }
+    .log-area::-webkit-scrollbar { width: 6px; }
+    .log-area::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 3px; }
+    .links { text-align: center; margin-top: 1rem; font-size: 13px; }
+    .links a { color: #8ab4f8; }
+  </style>
+</head>
+<body>
+  <h1>通过高通漏洞宽容 SELinux 以获得临时 Root</h1>
+  <div class="panel">
+    <div class="step-info" id="step-info">初始化中...</div>
+    <div class="log-area" id="log"></div>
+  </div>
+  <div class="links">
+    <a href="/">返回首页</a>
+  </div>
+
+  <script src="../Assets/modal.js"></script>
+  <script src="../Assets/webadb.js"></script>
+  <script>
+  (function() {
+    "use strict";
+
+    const logEl = document.getElementById("log");
+    const stepEl = document.getElementById("step-info");
+
+    function log(msg) {
+      logEl.textContent += msg + "\n";
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    function setStep(msg) {
+      stepEl.textContent = msg;
+    }
+
+    /* ── ADB shell: 执行命令并收集全部输出直到 CLSE ── */
+    async function adbShell(device, command) {
+      const stream = await device.shell(command);
+      const decoder = new TextDecoder();
+      let output = "";
+      try {
+        for (;;) {
+          const response = await stream.receive();
+          if (response.cmd === "WRTE") {
+            if (response.data) {
+              output += decoder.decode(response.data, { stream: true });
+            }
+            await stream.send("OKAY");
+          } else if (response.cmd === "CLSE") {
+            await stream.close();
+            break;
+          }
+        }
+      } catch (e) {
+        try { await stream.close(); } catch (_) {}
+        throw e;
+      }
+      return output;
+    }
+
+    /* ── Fastboot 命令: 发送命令并接收响应直到 OKAY/FAIL ── */
+    async function fastbootCommand(fastboot, command) {
+      await fastboot.send(command);
+      const decoder = new TextDecoder();
+      let text = "";
+      for (;;) {
+        const response = await fastboot.receive();
+        const cmd = fastboot.get_cmd(response);
+        const payload = fastboot.get_payload(response);
+        const msg = decoder.decode(new Uint8Array(payload)).replace(/\0+$/, "").trimEnd();
+        if (cmd === "OKAY") {
+          text += msg;
+          break;
+        } else if (cmd === "INFO") {
+          text += msg + "\n";
+        } else if (cmd === "FAIL") {
+          throw new Error("Fastboot FAIL: " + msg);
+        } else if (cmd === "DATA") {
+          /* 不涉及下载，忽略 */
+        } else {
+          text += msg;
+        }
+      }
+      return text;
+    }
+
+    /* ── 通过 ADB sync push 推送 Blob 到设备 ── */
+    async function pushBlob(device, blob, remotePath, mode, onProgress) {
+      const sync = await device.sync();
+      try {
+        await sync.push(blob, remotePath, mode, onProgress || null);
+      } finally {
+        try { await sync.quit(); } catch (_) {}
+      }
+    }
+
+    /* ── 连接 ADB ── */
+    async function connectAdb() {
+      log("[*] 请在浏览器弹窗中选择手机（ADB 模式）...");
+      const transport = await Adb.open("WebUSB");
+      const adb = await transport.connectAdb("host::", function() {
+        log("[*] 请在手机屏幕上确认 USB 调试授权...");
+      });
+      log("[+] ADB 已连接: " + (adb.banner || "").split("\n")[0]);
+      return { transport, adb };
+    }
+
+    /* ── 连接 Fastboot ── */
+    async function connectFastboot() {
+      log("[*] 请在浏览器弹窗中选择手机（Fastboot 模式）...");
+      const transport = await Adb.open("WebUSB");
+      const fastboot = await transport.connectFastboot();
+      log("[+] Fastboot 已连接");
+      return { transport, fastboot };
+    }
+
+    function safeCloseTransport(transport) {
+      if (!transport) return;
+      try { transport.close(); } catch (_) {}
+    }
+
+    /* ── 主流程 ── */
+    (async function main() {
+      /* 1. 免责声明 */
+      const agreed = await customConfirm(
+        "免责声明与风险提示\n\n" +
+        "本工具利用高通漏洞临时宽容 SELinux 以获取临时 root，仅供学习研究使用。\n\n" +
+        "使用本工具可能导致设备变砖、系统损坏、数据丢失、失去保修或其他不可预知的后果。\n" +
+        "作者不对因使用本工具造成的任何直接或间接损失承担责任，所有风险由使用者自行承担。\n\n" +
+        "点击「确定」即表示您已阅读并同意上述条款，愿意自行承担所有风险。"
+      );
+      if (!agreed) {
+        setStep("已取消");
+        return;
+      }
+
+      /* 2. 询问当前手机状态 */
+      const status = await customVersionSelect("请选择当前手机的状态：", [
+        { label: "ADB（手机已开机）", value: "adb" },
+        { label: "Fastboot（引导模式）", value: "fastboot" },
+      ]);
+      if (!status) {
+        setStep("已取消");
+        return;
+      }
+
+      let transport = null;
+
+      /* 3. 如果是 ADB，重启到 fastboot */
+      if (status === "adb") {
+        setStep("步骤 1/6: 通过 ADB 重启到 Fastboot");
+        log("[*] 连接 ADB...");
+        let adb;
+        ({ transport, adb } = await connectAdb());
+
+        log("[*] 执行: adb reboot bootloader");
+        setStep("步骤 1/6: 正在重启到 Fastboot...");
+        try {
+          await adb.reboot("bootloader");
+        } catch (e) {
+          /* 设备重启时连接断开属于正常 */
+          log("[*] 重启命令已发送（连接断开属正常）");
+        }
+        log("[+] 重启命令已发送，等待手机进入 Fastboot 模式");
+        safeCloseTransport(transport);
+        transport = null;
+
+        await customAlert(
+          "手机正在重启到 Fastboot 模式。\n\n" +
+          "当手机进入 Fastboot 界面（通常显示一只兔子或 FASTBOOT 字样）后，\n" +
+          "点击「确定」继续。"
+        );
+      } else {
+        log("[*] 手机已在 Fastboot 模式");
+        await customAlert("请确认手机已进入 Fastboot 模式。点击「确定」继续。");
+      }
+
+      /* 4. 连接 Fastboot 并执行漏洞命令 */
+      setStep("步骤 2/6: 连接 Fastboot");
+      log("[*] 连接 Fastboot...");
+      let fastboot;
+      ({ transport, fastboot } = await connectFastboot());
+
+      /* 5. 执行 fastboot oem set-gpu-preemption 0 androidboot.selinux=permissive */
+      setStep("步骤 3/6: 执行高通漏洞命令");
+      const oemCmd = "oem set-gpu-preemption 0 androidboot.selinux=permissive";
+      log("[*] 执行: fastboot " + oemCmd);
+      try {
+        const oemResult = await fastbootCommand(fastboot, oemCmd);
+        if (oemResult) log("[+] 响应: " + oemResult);
+        log("[+] OEM 命令执行完成");
+      } catch (e) {
+        log("[!] OEM 命令返回错误（部分设备仍可继续）: " + e.message);
+      }
+
+      /* 6. fastboot continue */
+      setStep("步骤 4/6: 执行 fastboot continue");
+      log("[*] 执行: fastboot continue");
+      try {
+        const contResult = await fastbootCommand(fastboot, "continue");
+        if (contResult) log("[+] 响应: " + contResult);
+      } catch (e) {
+        log("[*] continue 后设备已断开（正常）: " + e.message);
+      }
+      log("[+] 等待手机启动进入系统...");
+      safeCloseTransport(transport);
+      transport = null;
+
+      /* 7. 等待开机进入系统 */
+      await customAlert(
+        "手机正在启动进入系统。\n\n" +
+        "请等待手机完全启动并进入桌面后，点击「确定」继续。\n" +
+        "（确保手机保持 USB 连接，且 USB 调试仍已开启）"
+      );
+
+      /* 8. 连接 ADB */
+      setStep("步骤 5/6: 连接 ADB 并下载 KernelSU");
+      log("[*] 连接 ADB...");
+      let adb;
+      ({ transport, adb } = await connectAdb());
+
+      /* 9. 通过 GitHub API 获取 KernelSU 最新版本 */
+      setStep("步骤 5/6: 从 GitHub API 获取 KernelSU 最新版本");
+      log("[*] 正在请求 GitHub API...");
+      const releaseResp = await fetch("https://api.github.com/repos/tiann/KernelSU/releases/latest");
+      if (!releaseResp.ok) {
+        throw new Error("GitHub API 请求失败: HTTP " + releaseResp.status);
+      }
+      const release = await releaseResp.json();
+      log("[+] 最新版本: " + release.tag_name + " (" + release.name + ")");
+
+      /* 查找 Manager APK 资源 */
+      let apkAsset = release.assets.find(function(a) {
+        return a.name.endsWith(".apk") && /manager/i.test(a.name);
+      });
+      if (!apkAsset) {
+        apkAsset = release.assets.find(function(a) { return a.name.endsWith(".apk"); });
+      }
+      if (!apkAsset) {
+        throw new Error("未在最新版本中找到 KernelSU Manager APK。请手动下载安装。");
+      }
+      const apkSizeMB = (apkAsset.size / 1024 / 1024).toFixed(1);
+      log("[+] APK: " + apkAsset.name + " (" + apkSizeMB + " MB)");
+      log("[*] 下载 APK: " + apkAsset.browser_download_url);
+
+      setStep("步骤 5/6: 下载 KernelSU Manager APK (" + apkSizeMB + " MB)");
+      const apkResp = await fetch(apkAsset.browser_download_url);
+      if (!apkResp.ok) {
+        throw new Error("APK 下载失败: HTTP " + apkResp.status);
+      }
+      const apkBuf = await apkResp.arrayBuffer();
+      const apkBlob = new Blob([apkBuf]);
+      log("[+] 下载完成: " + apkBuf.byteLength + " 字节");
+
+      /* 10. 推送并安装 APK */
+      setStep("步骤 5/6: 推送 APK 到手机...");
+      log("[*] 推送 APK 到 /data/local/tmp/kernelsu.apk ...");
+      await pushBlob(adb, apkBlob, "/data/local/tmp/kernelsu.apk", 0o644, function(done, total) {
+        const pct = Math.round(done / total * 100);
+        setStep("步骤 5/6: 推送 APK... " + pct + "%");
+      });
+      log("[+] APK 已推送");
+
+      setStep("步骤 5/6: 安装 KernelSU Manager APK...");
+      log("[*] 执行: pm install -r /data/local/tmp/kernelsu.apk");
+      const installResult = await adbShell(adb, "pm install -r /data/local/tmp/kernelsu.apk");
+      log("[+] 安装结果: " + installResult.trim());
+
+      /* 清理临时文件 */
+      try {
+        await adbShell(adb, "rm -f /data/local/tmp/kernelsu.apk");
+      } catch (_) {}
+
+      /* 11. 推送 payload */
+      setStep("步骤 6/6: 推送 payload");
+      log("[*] 获取 payload 二进制...");
+      const payloadResp = await fetch("../Assets/payload");
+      if (!payloadResp.ok) {
+        throw new Error("payload 获取失败: HTTP " + payloadResp.status);
+      }
+      const payloadBuf = await payloadResp.arrayBuffer();
+      const payloadBlob = new Blob([payloadBuf]);
+      log("[+] payload 大小: " + payloadBuf.byteLength + " 字节");
+
+      log("[*] 推送 payload 到 /data/local/tmp/payload ...");
+      await pushBlob(adb, payloadBlob, "/data/local/tmp/payload", 0o755, function(done, total) {
+        const pct = Math.round(done / total * 100);
+        setStep("步骤 6/6: 推送 payload... " + pct + "%");
+      });
+      log("[+] payload 已推送");
+
+      /* 12. 设置权限并执行 payload */
+      setStep("步骤 6/6: 执行 payload（请耐心等待）");
+      log("[*] 设置执行权限...");
+      await adbShell(adb, "chmod 755 /data/local/tmp/payload");
+
+      log("[*] 执行: /data/local/tmp/payload");
+      const payloadResult = await adbShell(adb, "/data/local/tmp/payload");
+      log("[+] payload 输出:\n" + payloadResult.trim());
+
+      /* 清理 */
+      try {
+        await adbShell(adb, "rm -f /data/local/tmp/payload");
+      } catch (_) {}
+
+      safeCloseTransport(transport);
+
+      /* 完成 */
+      setStep("全部完成！");
+      log("[+] 全部步骤执行完毕。");
+      await customAlert(
+        "所有步骤已完成！\n\n" +
+        "请打开手机上的 KernelSU Manager 应用，检查是否显示已越狱（jailbreak 模式）。\n\n" +
+        "如果未显示，请尝试再次运行 payload 或检查 SELinux 状态。"
+      );
+    })().catch(async function(e) {
+      const msg = e && e.message ? e.message : String(e);
+      log("[!] 执行失败: " + msg);
+      setStep("执行失败");
+      await customAlert("执行失败: " + msg);
+    });
+  })();
+  </script>
+</body>
+</html>
