@@ -35,6 +35,56 @@ function customVersionSelect(message, options) {
     });
   });
 }
+function customFileSelect(message, accept) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.className = "modal-overlay";
+    const card = document.createElement("div");
+    card.className = "modal-card";
+    const msg = document.createElement("div");
+    msg.className = "modal-msg";
+    msg.textContent = message;
+    card.appendChild(msg);
+    const fileInput = document.createElement("input");
+    fileInput.type = "file";
+    fileInput.accept = accept || ".so";
+    fileInput.style.cssText = "display:block;width:100%;margin-bottom:18px;font-size:14px;color:#fff;";
+    card.appendChild(fileInput);
+    function markActive() { window.__filePickerActive = true; }
+    function markInactive() { window.__filePickerActive = false; }
+    fileInput.addEventListener("click", markActive);
+    fileInput.addEventListener("focus", markActive);
+    fileInput.addEventListener("change", markInactive);
+    function onWinFocus() {
+      // 选择器关闭（无论是否选了文件）后稍延时清除标记
+      setTimeout(markInactive, 300);
+    }
+    window.addEventListener("focus", onWinFocus);
+    const btns = document.createElement("div");
+    btns.className = "modal-btns";
+    const cancelBtn = document.createElement("button");
+    cancelBtn.className = "modal-btn";
+    cancelBtn.textContent = "取消";
+    const okBtn = document.createElement("button");
+    okBtn.className = "modal-btn modal-btn-primary";
+    okBtn.textContent = "确定";
+    btns.appendChild(cancelBtn);
+    btns.appendChild(okBtn);
+    card.appendChild(btns);
+    overlay.appendChild(card);
+    document.body.appendChild(overlay);
+    function cleanup() {
+      window.removeEventListener("focus", onWinFocus);
+      markInactive();
+    }
+    cancelBtn.onclick = () => { cleanup(); closeOverlay(overlay, () => resolve(null)); };
+    okBtn.onclick = () => {
+      const file = fileInput.files && fileInput.files[0] ? fileInput.files[0] : null;
+      cleanup();
+      closeOverlay(overlay, () => resolve(file));
+    };
+  });
+}
 function closeOverlay(overlay, cb) {
   overlay.style.animation = "modalFadeOut 0.2s ease forwards";
   const card = overlay.querySelector(".modal-card");
