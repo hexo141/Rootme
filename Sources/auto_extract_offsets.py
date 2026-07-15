@@ -71,6 +71,78 @@ SYMBOL_ALIASES = {
     'ashmem_show_fdinfo':    ['ashmem_show_fdinfo'],
 }
 
+# Rust ashmem MiscDevice vtable method patterns (Qualcomm sm8850 6.12 kernel).
+# On this kernel ashmem is implemented in Rust (ashmem_rust module), so the
+# traditional C symbols (ashmem_fops, ashmem_misc) do not exist. The MiscDevice
+# vtable methods have mangled Rust symbol names like:
+#   _RNvMs4_...MiscdeviceVTableNtCs<hash>6AshmemE<len><method>B<build>_
+# We match on "6AshmemE<len><method>" to find the main Ashmem type (not
+# AshmemToggle variants which use "16AshmemToggleMisc").
+RUST_ASHMEM_METHOD_PATTERNS = {
+    'open':         '6AshmemE4open',
+    'ioctl':        '6AshmemE5ioctl',
+    'llseek':       '6AshmemE6llseek',
+    'release':      '6AshmemE7release',
+    'read_iter':    '6AshmemE9read_iter',
+    'mmap':         '6AshmemE4mmap',
+    'show_fdinfo':  '6AshmemE11show_fdinfo',
+    'compat_ioctl': '6AshmemE12compat_ioctl',
+}
+
+# file_operations struct field offsets differ between kernel versions.
+# 6.12 removed/shifted fields before open, so open/release/show_fdinfo moved
+# down by 8 bytes compared to 6.6 GKI. Only the fields we verify/match are
+# listed here.
+FOPS_LAYOUTS = {
+    '6.6': {
+        'owner': 0x00, 'llseek': 0x08, 'read': 0x10, 'write': 0x18,
+        'read_iter': 0x20, 'write_iter': 0x28,
+        'ioctl': 0x48, 'compat_ioctl': 0x50, 'mmap': 0x58,
+        'open': 0x68, 'release': 0x78, 'show_fdinfo': 0xd8,
+    },
+    '6.12': {
+        'owner': 0x00, 'llseek': 0x08, 'read': 0x10, 'write': 0x18,
+        'read_iter': 0x20, 'write_iter': 0x28,
+        'ioctl': 0x48, 'compat_ioctl': 0x50, 'mmap': 0x58,
+        'open': 0x60, 'release': 0x70, 'show_fdinfo': 0xd0,
+    },
+}
+
+# Canonical fops field offsets for target.h generation, per layout version.
+# These are the FOPS_*_OFF defines written at the bottom of target.h.
+FOPS_FIELD_DEFINES = {
+    '6.6': [
+        ("FOPS_OWNER_OFF", "0x00"),
+        ("FOPS_LLSEEK_OFF", "0x08"),
+        ("FOPS_READ_OFF", "0x10"),
+        ("FOPS_WRITE_OFF", "0x18"),
+        ("FOPS_READ_ITER_OFF", "0x20"),
+        ("FOPS_WRITE_ITER_OFF", "0x28"),
+        ("FOPS_IOCTL_OFF", "0x48"),
+        ("FOPS_COMPAT_IOCTL_OFF", "0x50"),
+        ("FOPS_MMAP_OFF", "0x58"),
+        ("FOPS_OPEN_OFF", "0x68"),
+        ("FOPS_RELEASE_OFF", "0x78"),
+        ("FOPS_SPLICE_READ_OFF", "0xb8"),
+        ("FOPS_SHOW_FDINFO_OFF", "0xd8"),
+    ],
+    '6.12': [
+        ("FOPS_OWNER_OFF", "0x00"),
+        ("FOPS_LLSEEK_OFF", "0x08"),
+        ("FOPS_READ_OFF", "0x10"),
+        ("FOPS_WRITE_OFF", "0x18"),
+        ("FOPS_READ_ITER_OFF", "0x20"),
+        ("FOPS_WRITE_ITER_OFF", "0x28"),
+        ("FOPS_IOCTL_OFF", "0x48"),
+        ("FOPS_COMPAT_IOCTL_OFF", "0x50"),
+        ("FOPS_MMAP_OFF", "0x58"),
+        ("FOPS_OPEN_OFF", "0x60"),
+        ("FOPS_RELEASE_OFF", "0x70"),
+        ("FOPS_SPLICE_READ_OFF", "0xb8"),
+        ("FOPS_SHOW_FDINFO_OFF", "0xd0"),
+    ],
+}
+
 # CTL_TABLE entry size (struct ctl_table on arm64 Linux 6.6)
 CTL_TABLE_ENTRY_SIZE = 0x40
 CTL_TABLE_DATA_OFF = 0x08  # .data field offset within ctl_table
@@ -351,44 +423,161 @@ class KernelImage:
 
     # -- Verification methods --
 
-    def verify_fops_layout(self, fops_sym_name='ashmem_fops'):
-        """Verify file_operations struct layout by checking function pointers."""
+    def verify_fops_layout(self, fops_sym_name='ashmem_fops', methods=None):
+        """Verify file_operations struct layout by checking function pointers.
+
+        Tries both 6.6 and 6.12 fops layouts. Returns:
+            (layout_name, fops_off, all_ok)
+        where layout_name is '6.6', '6.12', or None if no match.
+
+        For C ashmem: pass fops_sym_name to look up the symbol.
+        For Rust ashmem: pass methods dict {method_name: address}.
+        """
+        if methods is not None:
+            # Rust ashmem: no fops symbol, we need to locate the table by
+            # scanning for the llseek pointer and verifying the layout.
+            return self._find_rust_ashmem_fops_table(methods)
+
+        # C ashmem: look up the symbol and verify against both layouts
         fops_addr = self.sym_addr(fops_sym_name)
         if fops_addr is None:
-            return None, "symbol not found"
+            return None, None, "symbol not found"
         fops_off = self.addr_to_off(fops_addr)
 
-        # Expected FOPS layout
-        EXPECTED = {
-            0x08: ('ashmem_llseek', 'llseek'),
-            0x20: ('ashmem_read_iter', 'read_iter'),
-            0x48: ('ashmem_ioctl', 'ioctl'),
-            0x50: ('compat_ashmem_ioctl', 'compat_ioctl'),
-            0x58: ('ashmem_mmap', 'mmap'),
-            0x68: ('ashmem_open', 'open'),
-            0x78: ('ashmem_release', 'release'),
-            0xd8: ('ashmem_show_fdinfo', 'show_fdinfo'),
+        # Symbol-to-method mapping for C ashmem
+        c_ashmem_methods = {
+            'llseek':       'ashmem_llseek',
+            'read_iter':    'ashmem_read_iter',
+            'ioctl':        'ashmem_ioctl',
+            'compat_ioctl': 'compat_ashmem_ioctl',
+            'mmap':         'ashmem_mmap',
+            'open':         'ashmem_open',
+            'release':      'ashmem_release',
+            'show_fdinfo':  'ashmem_show_fdinfo',
         }
 
-        checks = {}
-        all_ok = True
-        for foff, (sym, label) in EXPECTED.items():
-            expected_addr = self.sym_addr(sym)
-            actual = self.u64(fops_off + foff)
-            if expected_addr is not None and actual is not None:
-                ok = (actual == expected_addr)
-                checks[label] = ok
-                if not ok:
-                    all_ok = False
-            else:
-                checks[label] = None
+        # Try each layout
+        for layout_name, layout in FOPS_LAYOUTS.items():
+            all_ok = True
+            for method, sym_name in c_ashmem_methods.items():
+                expected = self.sym_addr(sym_name)
+                actual = self.u64(fops_off + layout[method])
+                if expected is not None and actual is not None:
+                    if actual != expected:
+                        all_ok = False
+                        break
+            if all_ok:
+                return layout_name, fops_off, True
 
-        return all_ok, checks
+        # No layout fully matched; default to 6.6
+        return '6.6', fops_off, False
+
+    def _find_rust_ashmem_fops_table(self, methods):
+        """Locate the file_operations table for Rust ashmem by scanning the
+        kernel image for a structure containing the ashmem function pointers.
+
+        Tries both 6.6 and 6.12 fops layouts. Returns:
+            (layout_name, fops_off, all_ok)
+        """
+        if not methods or 'llseek' not in methods:
+            return None, None, "no llseek method found"
+
+        # Search for the llseek function pointer value in the kernel image
+        llseek_packed = struct.pack('<Q', methods['llseek'])
+        pos = 0
+        while True:
+            idx = self.img.find(llseek_packed, pos)
+            if idx < 0:
+                break
+            pos = idx + 8
+
+            # Try each layout: fops_base = llseek_pos - llseek_offset
+            for layout_name, layout in FOPS_LAYOUTS.items():
+                fops_base = idx - layout['llseek']
+                if fops_base < 0 or fops_base + 0xe0 > self.img_size:
+                    continue
+
+                # Verify all known method pointers match
+                all_match = True
+                for method_name, expected_addr in methods.items():
+                    if method_name not in layout:
+                        continue
+                    actual = self.u64(fops_base + layout[method_name])
+                    if actual != expected_addr:
+                        all_match = False
+                        break
+
+                if all_match:
+                    return layout_name, fops_base, True
+
+        return None, None, "no fops table match found"
+
+    def find_rust_ashmem_methods(self):
+        """Find Rust ashmem MiscDevice vtable method symbols.
+
+        On Qualcomm sm8850 6.12 kernel, ashmem is implemented in Rust
+        (ashmem_rust module). The MiscDevice vtable methods have mangled
+        Rust symbol names like:
+          _RNvMs4_...MiscdeviceVTableNtCs<hash>6AshmemE<len><method>B<build>_
+
+        Returns dict {method_name: address} or empty dict if not found.
+        """
+        methods = {}
+        for sym_name, addr in self.syms.items():
+            if 'MiscdeviceVTable' not in sym_name:
+                continue
+            # Exclude ashmem_toggle variants (different device)
+            if 'ashmem_toggle' in sym_name.lower():
+                continue
+            for method, pattern in RUST_ASHMEM_METHOD_PATTERNS.items():
+                if pattern in sym_name and method not in methods:
+                    methods[method] = addr
+        return methods
+
+    def find_ashmem_fops_ptr(self):
+        """Find the ASHMEM_FOPS_PTR BSS variable (Rust ashmem).
+
+        This variable holds the pointer to the file_operations table at
+        runtime, filled in by __ashmem_rust_init. It serves as
+        ASHMEM_MISC_FOPS_OFF since the miscdevice struct is initialized at
+        runtime (BSS) rather than having a static fops pointer.
+        """
+        for sym_name, addr in self.syms.items():
+            if 'ASHMEM_FOPS_PTR' in sym_name:
+                return self.addr_to_off(addr), sym_name
+        return None, None
+
+    def find_security_hook_heads_off(self):
+        """Find SECURITY_HOOK_HEADS offset.
+
+        On kernels <= 6.6, uses the security_hook_heads symbol directly.
+        On 6.12+ kernels, security_hook_heads was replaced by static-call
+        based security_hook_active_* slots. In that case, compute:
+          security_hook_active_capable_0 - 0x40
+        so that SECURITY_CAPABLE_HEAD (= SECURITY_HOOK_HEADS + 0x40) lands
+        on security_hook_active_capable_0 (the closest equivalent for the
+        capable hook).
+
+        Returns (offset, source_description) or (None, None).
+        """
+        # Try traditional symbol first (6.6 and earlier)
+        off = self.sym_off('security_hook_heads')
+        if off is not None:
+            return off, 'security_hook_heads symbol'
+
+        # Fallback: 6.12 static-call based hooks
+        capable_0 = self.sym_addr('security_hook_active_capable_0')
+        if capable_0 is not None:
+            computed = self.addr_to_off(capable_0) - 0x40
+            return computed, 'security_hook_active_capable_0 - 0x40 (6.12 static calls)'
+
+        return None, None
 
     def verify_task_offsets(self):
         """Verify task_struct field offsets using init_task.
 
-        Uses known GKI 6.6 offsets as targets and verifies them via binary analysis.
+        Supports both GKI 6.6 and 6.12 kernel layouts. Tries known offsets
+        for each version, then falls back to a search if needed.
         """
         init_task_addr = self.sym_addr('init_task')
         init_cred_addr = self.sym_addr('init_cred')
@@ -398,27 +587,31 @@ class KernelImage:
         task_off = self.addr_to_off(init_task_addr)
         results = {}
 
-        # Known GKI 6.6 task_struct offsets to verify
-        KNOWN = {
-            'TASK_TASKS_OFF': 0x550,
-            'TASK_COMM_OFF': 0x830,
-            'TASK_REAL_PARENT_OFF': 0x628,
-            'TASK_REAL_CRED_OFF': 0x818,
-            'TASK_CRED_OFF': 0x820,
-            'TASK_PID_OFF': 0x618,
-            'TASK_TGID_OFF': 0x61c,
-            'TASK_ATOMIC_FLAGS_OFF': 0x5d8,
-            'TASK_SECCOMP_OFF': 0x8e8,
+        # Known task_struct offsets for different kernel versions.
+        # Each field has a list of candidate offsets to try (6.6, then 6.12).
+        KNOWN_CANDIDATES = {
+            'TASK_TASKS_OFF':       [0x550, 0x590],
+            'TASK_COMM_OFF':        [0x830],
+            'TASK_REAL_PARENT_OFF': [0x628],
+            'TASK_REAL_CRED_OFF':   [0x818],
+            'TASK_CRED_OFF':        [0x820],
+            'TASK_PID_OFF':         [0x618],
+            'TASK_TGID_OFF':        [0x61c],
+            'TASK_ATOMIC_FLAGS_OFF':[0x5d8],
+            'TASK_SECCOMP_OFF':     [0x8e8],
         }
 
         # TASK_TASKS_OFF: verify self-referencing list_head at known offset
-        off_val = KNOWN['TASK_TASKS_OFF']
-        nxt = self.u64(task_off + off_val)
-        prv = self.u64(task_off + off_val + 8)
-        if nxt is not None and nxt == prv and nxt == init_task_addr + off_val:
-            results['TASK_TASKS_OFF'] = off_val
-        else:
-            # Fallback: search for self-referencing list_head nearest to 0x550
+        found = False
+        for off_val in KNOWN_CANDIDATES['TASK_TASKS_OFF']:
+            nxt = self.u64(task_off + off_val)
+            prv = self.u64(task_off + off_val + 8)
+            if nxt is not None and nxt == prv and nxt == init_task_addr + off_val:
+                results['TASK_TASKS_OFF'] = off_val
+                found = True
+                break
+        if not found:
+            # Fallback: search for self-referencing list_head in 0x500-0x600
             for candidate in range(0x500, 0x600, 8):
                 n = self.u64(task_off + candidate)
                 p = self.u64(task_off + candidate + 8)
@@ -427,7 +620,7 @@ class KernelImage:
                     break
 
         # TASK_COMM_OFF: verify "swapper" at known offset
-        off_val = KNOWN['TASK_COMM_OFF']
+        off_val = KNOWN_CANDIDATES['TASK_COMM_OFF'][0]
         s = self.read_string(task_off + off_val, 16)
         if s == 'swapper':
             results['TASK_COMM_OFF'] = off_val
@@ -439,33 +632,33 @@ class KernelImage:
                     break
 
         # TASK_REAL_PARENT_OFF: verify points to init_task
-        off_val = KNOWN['TASK_REAL_PARENT_OFF']
+        off_val = KNOWN_CANDIDATES['TASK_REAL_PARENT_OFF'][0]
         val = self.u64(task_off + off_val)
         if val == init_task_addr:
             results['TASK_REAL_PARENT_OFF'] = off_val
 
         # TASK_REAL_CRED_OFF and TASK_CRED_OFF: verify point to init_cred
         for name in ['TASK_REAL_CRED_OFF', 'TASK_CRED_OFF']:
-            off_val = KNOWN[name]
+            off_val = KNOWN_CANDIDATES[name][0]
             val = self.u64(task_off + off_val)
             if val == init_cred_addr:
                 results[name] = off_val
 
         # TASK_PID_OFF and TASK_TGID_OFF: verify both are 0
         for name in ['TASK_PID_OFF', 'TASK_TGID_OFF']:
-            off_val = KNOWN[name]
+            off_val = KNOWN_CANDIDATES[name][0]
             val = self.u32(task_off + off_val)
             if val == 0:
                 results[name] = off_val
 
         # TASK_ATOMIC_FLAGS_OFF: verify is 0
-        off_val = KNOWN['TASK_ATOMIC_FLAGS_OFF']
+        off_val = KNOWN_CANDIDATES['TASK_ATOMIC_FLAGS_OFF'][0]
         val = self.u32(task_off + off_val)
         if val is not None and val == 0:
             results['TASK_ATOMIC_FLAGS_OFF'] = off_val
 
         # TASK_SECCOMP_OFF: verify mode=0, filter_count=0, filter=NULL
-        off_val = KNOWN['TASK_SECCOMP_OFF']
+        off_val = KNOWN_CANDIDATES['TASK_SECCOMP_OFF'][0]
         mode = self.u32(task_off + off_val)
         fcount = self.u32(task_off + off_val + 4)
         filter_ptr = self.u64(task_off + off_val + 8)
@@ -681,7 +874,8 @@ def get_text_offset(kernel_img):
 # ============================================================================
 
 def generate_targeth(target_name, build_info, kimage_base, phys_offset,
-                     text_offset, offsets, verified, device_override=None):
+                     text_offset, offsets, verified, device_override=None,
+                     fops_layout='6.6', ashmem_impl='c'):
     """Generate target.h content string."""
 
     kernel_phys_load = phys_offset + text_offset
@@ -729,6 +923,27 @@ def generate_targeth(target_name, build_info, kimage_base, phys_offset,
     lines.append("")
 
     # Symbol offsets
+    # Add comment for Rust ashmem / static-call security hooks
+    if ashmem_impl == 'rust':
+        lines.append("/* ashmem is implemented in Rust (ashmem_rust module) on this")
+        lines.append(" * kernel, so the traditional C symbols (ashmem_fops, ashmem_misc)")
+        lines.append(" * do not exist. ASHMEM_FOPS_OFF points to the const file_operations")
+        lines.append(" * table generated by the Rust MiscDevice framework (in .rodata).")
+        lines.append(" * ASHMEM_MISC_FOPS_OFF points to the ASHMEM_FOPS_PTR BSS variable")
+        lines.append(" * which holds the fops pointer at runtime (filled by")
+        lines.append(" * __ashmem_rust_init). The remaining ASHMEM_*_OFF values are the")
+        lines.append(" * Rust MiscDevice vtable trampoline functions. */")
+
+    if off('security_hook_heads_src') == 'static_call':
+        lines.append("/* This kernel replaced the security_hook_heads list_head array")
+        lines.append(" * with static-call based security_hook_active_* slots. The")
+        lines.append(" * SECURITY_HOOK_HEADS_OFF is computed as")
+        lines.append(" * security_hook_active_capable_0 - 0x40, so that")
+        lines.append(" * SECURITY_CAPABLE_HEAD (= SECURITY_HOOK_HEADS + 0x40) lands on")
+        lines.append(" * security_hook_active_capable_0. root.c only uses the")
+        lines.append(" * before/after comparison for diagnostics, so reading this")
+        lines.append(" * address is safe. */")
+
     sym_defines = [
         ('ASHMEM_MISC_FOPS_OFF', off('ashmem_misc_fops')),
         ('ASHMEM_FOPS_OFF', off('ashmem_fops')),
@@ -923,22 +1138,8 @@ def generate_targeth(target_name, build_info, kimage_base, phys_offset,
         lines.append(f"#define {name} {val}")
     lines.append("")
 
-    # FOPS offsets (verified - same across GKI 6.6)
-    fops_defs = [
-        ("FOPS_OWNER_OFF", "0x00"),
-        ("FOPS_LLSEEK_OFF", "0x08"),
-        ("FOPS_READ_OFF", "0x10"),
-        ("FOPS_WRITE_OFF", "0x18"),
-        ("FOPS_READ_ITER_OFF", "0x20"),
-        ("FOPS_WRITE_ITER_OFF", "0x28"),
-        ("FOPS_IOCTL_OFF", "0x48"),
-        ("FOPS_COMPAT_IOCTL_OFF", "0x50"),
-        ("FOPS_MMAP_OFF", "0x58"),
-        ("FOPS_OPEN_OFF", "0x68"),
-        ("FOPS_RELEASE_OFF", "0x78"),
-        ("FOPS_SPLICE_READ_OFF", "0xb8"),
-        ("FOPS_SHOW_FDINFO_OFF", "0xd8"),
-    ]
+    # FOPS offsets (layout-dependent: 6.6 vs 6.12)
+    fops_defs = FOPS_FIELD_DEFINES.get(fops_layout, FOPS_FIELD_DEFINES['6.6'])
     for name, val in fops_defs:
         lines.append(f"#define {name} {val}")
     lines.append("")
@@ -1024,24 +1225,94 @@ def main():
 
     # Collect all symbol offsets
     offsets = {}
+    fops_layout = '6.6'  # default, will be updated by verification
+    ashmem_impl = 'c'    # default, will be updated if Rust ashmem detected
 
-    # ASHMEM_MISC_FOPS (special: ashmem_misc + 0x10)
-    misc_fops_off, misc_msg = ki.find_ashmem_misc_fops()
-    if misc_fops_off is not None:
-        offsets['ashmem_misc_fops'] = misc_fops_off
-        print(f"  ASHMEM_MISC_FOPS: {misc_fops_off:#010x} ({misc_msg})")
+    # Detect ashmem implementation: C (traditional) vs Rust (Qualcomm 6.12)
+    has_c_ashmem = ki.sym_addr('ashmem_fops') is not None
+    rust_methods = ki.find_rust_ashmem_methods() if not has_c_ashmem else {}
+
+    if has_c_ashmem:
+        print("  ashmem implementation: C (traditional symbols)")
+        ashmem_impl = 'c'
+
+        # ASHMEM_MISC_FOPS (special: ashmem_misc + fops field offset)
+        misc_fops_off, misc_msg = ki.find_ashmem_misc_fops()
+        if misc_fops_off is not None:
+            offsets['ashmem_misc_fops'] = misc_fops_off
+            print(f"  ASHMEM_MISC_FOPS: {misc_fops_off:#010x} ({misc_msg})")
+        else:
+            print(f"  WARNING: ASHMEM_MISC_FOPS: {misc_msg}", file=sys.stderr)
+
+        # Other ashmem symbol offsets (C symbols)
+        ashmem_sym_map = [
+            ('ashmem_fops', 'ashmem_fops'),
+            ('ashmem_ioctl', 'ashmem_ioctl'),
+            ('compat_ashmem_ioctl', 'compat_ashmem_ioctl'),
+            ('ashmem_mmap', 'ashmem_mmap'),
+            ('ashmem_open', 'ashmem_open'),
+            ('ashmem_release', 'ashmem_release'),
+            ('ashmem_show_fdinfo', 'ashmem_show_fdinfo'),
+        ]
+        for key, sym_name in ashmem_sym_map:
+            sym_off = ki.sym_off(sym_name)
+            if sym_off is not None:
+                offsets[key] = sym_off
+                print(f"  {key}: {sym_off:#010x}")
+            else:
+                print(f"  WARNING: {key} (symbol {sym_name}): not found",
+                      file=sys.stderr)
+
+    elif rust_methods:
+        print(f"  ashmem implementation: Rust (ashmem_rust module)")
+        print(f"  Found {len(rust_methods)} Rust ashmem vtable methods:")
+        ashmem_impl = 'rust'
+
+        # Method name -> offsets key mapping
+        rust_method_keys = {
+            'ioctl': 'ashmem_ioctl',
+            'compat_ioctl': 'compat_ashmem_ioctl',
+            'mmap': 'ashmem_mmap',
+            'open': 'ashmem_open',
+            'release': 'ashmem_release',
+            'show_fdinfo': 'ashmem_show_fdinfo',
+        }
+        for method, addr in sorted(rust_methods.items()):
+            sym_off = ki.addr_to_off(addr)
+            key = rust_method_keys.get(method)
+            if key:
+                offsets[key] = sym_off
+            print(f"    {method}: {addr:#018x} (off {sym_off:#010x})")
+
+        # Locate the file_operations table by scanning for function pointers
+        print("  --- Locating Rust ashmem fops table ---")
+        layout_name, fops_off, fops_ok = ki.verify_fops_layout(
+            methods=rust_methods)
+        if fops_ok and fops_off is not None:
+            offsets['ashmem_fops'] = fops_off
+            fops_layout = layout_name
+            print(f"  ASHMEM_FOPS: fops_off={fops_off:#010x} "
+                  f"(layout={layout_name})")
+        else:
+            print(f"  WARNING: could not locate Rust ashmem fops table: "
+                  f"{fops_ok}", file=sys.stderr)
+
+        # Locate ASHMEM_FOPS_PTR BSS variable
+        fops_ptr_off, fops_ptr_sym = ki.find_ashmem_fops_ptr()
+        if fops_ptr_off is not None:
+            offsets['ashmem_misc_fops'] = fops_ptr_off
+            print(f"  ASHMEM_MISC_FOPS: {fops_ptr_off:#010x} "
+                  f"({fops_ptr_sym})")
+        else:
+            print("  WARNING: ASHMEM_FOPS_PTR not found in kallsyms",
+                  file=sys.stderr)
+
     else:
-        print(f"  WARNING: ASHMEM_MISC_FOPS: {misc_msg}", file=sys.stderr)
+        print("  WARNING: neither C nor Rust ashmem symbols found",
+              file=sys.stderr)
 
-    # Other symbol offsets
+    # Non-ashmem symbol offsets (common to both implementations)
     sym_map = [
-        ('ashmem_fops', 'ashmem_fops'),
-        ('ashmem_ioctl', 'ashmem_ioctl'),
-        ('compat_ashmem_ioctl', 'compat_ashmem_ioctl'),
-        ('ashmem_mmap', 'ashmem_mmap'),
-        ('ashmem_open', 'ashmem_open'),
-        ('ashmem_release', 'ashmem_release'),
-        ('ashmem_show_fdinfo', 'ashmem_show_fdinfo'),
         ('configfs_read_iter', 'configfs_read_iter'),
         ('configfs_bin_write_iter', 'configfs_bin_write_iter'),
         ('copy_splice_read', 'copy_splice_read'),
@@ -1050,17 +1321,28 @@ def main():
         ('root_task_group', 'root_task_group'),
         ('selinux_blob_sizes', 'selinux_blob_sizes'),
         ('selinux_state', 'selinux_state'),
-        ('security_hook_heads', 'security_hook_heads'),
         ('kmalloc_caches', 'kmalloc_caches'),
         ('anon_pipe_buf_ops', 'anon_pipe_buf_ops'),
     ]
     for key, sym_name in sym_map:
-        off = ki.sym_off(sym_name)
-        if off is not None:
-            offsets[key] = off
-            print(f"  {key}: {off:#010x}")
+        sym_off = ki.sym_off(sym_name)
+        if sym_off is not None:
+            offsets[key] = sym_off
+            print(f"  {key}: {sym_off:#010x}")
         else:
-            print(f"  WARNING: {key} (symbol {sym_name}): not found", file=sys.stderr)
+            print(f"  WARNING: {key} (symbol {sym_name}): not found",
+                  file=sys.stderr)
+
+    # SECURITY_HOOK_HEADS (with 6.12 static-call fallback)
+    print("  --- security_hook_heads ---")
+    hook_off, hook_src = ki.find_security_hook_heads_off()
+    if hook_off is not None:
+        offsets['security_hook_heads'] = hook_off
+        if 'static' in hook_src:
+            offsets['security_hook_heads_src'] = 'static_call'
+        print(f"  SECURITY_HOOK_HEADS: {hook_off:#010x} ({hook_src})")
+    else:
+        print("  WARNING: SECURITY_HOOK_HEADS not found", file=sys.stderr)
 
     # SLIDE offsets
     print("  --- SLIDE offsets ---")
@@ -1070,13 +1352,16 @@ def main():
             offsets[name] = val  # keep original uppercase key
             print(f"  {name}: {val:#010x}")
 
-    # Verify FOPS layout
-    print("  --- FOPS layout verification ---")
-    fops_ok, fops_checks = ki.verify_fops_layout()
-    if fops_ok:
-        print("  FOPS layout: VERIFIED (all function pointers match)")
-    else:
-        print(f"  FOPS layout: checks = {fops_checks}")
+    # FOPS layout verification (for C ashmem; Rust already verified above)
+    if ashmem_impl == 'c':
+        print("  --- FOPS layout verification ---")
+        layout_name, fops_off, fops_ok = ki.verify_fops_layout()
+        if fops_ok:
+            fops_layout = layout_name
+            print(f"  FOPS layout: VERIFIED (layout={layout_name})")
+        else:
+            print(f"  FOPS layout: using default {fops_layout} "
+                  f"(verification result: {fops_ok})")
 
     # Verify task_struct offsets
     print("  --- task_struct offset verification ---")
@@ -1085,7 +1370,7 @@ def main():
         for name, val in task_results.items():
             print(f"  {name} = {val:#x}")
     else:
-        print("  Using default task_struct offsets (GKI 6.6)")
+        print("  Using default task_struct offsets")
 
     # Verify cred struct offsets
     print("  --- cred struct offset verification ---")
@@ -1135,7 +1420,8 @@ def main():
 
     content = generate_targeth(
         target_name, build_info, kimage_base, phys_offset,
-        text_offset, offsets, verified, device_override=args.device
+        text_offset, offsets, verified, device_override=args.device,
+        fops_layout=fops_layout, ashmem_impl=ashmem_impl
     )
 
     with open(target_path, 'w') as f:
