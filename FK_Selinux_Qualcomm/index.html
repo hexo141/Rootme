@@ -335,6 +335,40 @@
       let adb;
       ({ transport, adb } = await connectAdb());
 
+      /* 8.5 检测小米手机并执行特调 */
+      let isXiaomi = false;
+      try {
+        const manufacturer = (await adbShell(adb, "getprop ro.product.manufacturer")).trim().toLowerCase();
+        log("[*] 检测到设备厂商: " + manufacturer);
+        if (manufacturer.includes("xiaomi")) {
+          isXiaomi = true;
+        }
+      } catch (e) {
+        log("[*] 无法检测设备厂商，跳过小米特调: " + e.message);
+      }
+
+      if (isXiaomi) {
+        const useXiaomiTweak = await customConfirm(
+          "检测到小米设备\n\n" +
+          "是否使用小米粥特调？\n\n" +
+          "点击「确定」将执行小米特调命令，点击「取消」跳过。"
+        );
+        if (useXiaomiTweak) {
+          setStep("步骤 5/6: 执行小米粥特调...");
+          log("[*] 执行小米粥特调命令...");
+          try {
+            const tweakResult = await adbShell(adb,
+              'service call miui.mqsas.IMQSNative 21 i32 1 s16 "/data/local/tmp/ksud" i32 1 s16 "late-load" s16 "/sdcard/ksulog.txt" i32 600'
+            );
+            log("[+] 小米粥特调执行完成: " + tweakResult.trim());
+          } catch (e) {
+            log("[!] 小米粥特调执行出错: " + e.message);
+          }
+        } else {
+          log("[*] 用户跳过了小米粥特调");
+        }
+      }
+
       /* 9. 通过 GitHub API 获取 KernelSU 最新版本 */
       setStep("步骤 5/6: 从 GitHub API 获取 KernelSU 最新版本");
       log("[*] 正在请求 GitHub API...");
