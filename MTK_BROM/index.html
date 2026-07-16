@@ -1,0 +1,371 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MTK BROM 连接工具</title>
+  <link rel="stylesheet" href="../Assets/modal.css">
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+      transition: 0.25s;
+    }
+    body {
+      font-family: "微软雅黑", "PingFang SC", sans-serif;
+      background-image: url("https://t.alcy.cc/ycy");
+      background-size: cover;
+      background-repeat: no-repeat;
+      background-position: center;
+      background-attachment: fixed;
+      color: #3e3e3e;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 2rem 1rem;
+    }
+    h1 {
+      font-size: 24px;
+      margin-bottom: 1.5rem;
+      text-align: center;
+      color: #3e3e3e;
+      text-shadow: 0 1px 0 rgba(255,255,255,0.5);
+    }
+    .panel {
+      width: 100%;
+      max-width: 820px;
+      background: rgba(255,255,255,0.15);
+      border: 1px solid rgba(255,255,255,0.35);
+      border-radius: 20px;
+      padding: 1.4rem;
+      margin-bottom: 1rem;
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      box-shadow:
+        0 8px 32px rgba(0,0,0,0.1),
+        inset 0 1px 0 rgba(255,255,255,0.5),
+        inset 0 -1px 0 rgba(255,255,255,0.2);
+    }
+    .step-info {
+      font-size: 15px;
+      color: #2a2a2a;
+      font-weight: bold;
+      margin-bottom: 0.8rem;
+      min-height: 24px;
+      padding: 0.6rem 1rem;
+      background: rgba(255,255,255,0.25);
+      border: 1px solid rgba(255,255,255,0.4);
+      border-radius: 14px;
+      box-shadow:
+        inset 0 1px 0 rgba(255,255,255,0.6),
+        0 2px 8px rgba(0,0,0,0.05);
+      text-shadow: 0 1px 0 rgba(255,255,255,0.4);
+    }
+    .btn-row {
+      display: flex;
+      gap: 0.8rem;
+      margin-bottom: 0.8rem;
+      flex-wrap: wrap;
+    }
+    .btn {
+      flex: 1;
+      min-width: 160px;
+      padding: 0.85rem 1.4rem;
+      cursor: pointer;
+      font-size: 15px;
+      font-weight: bold;
+      color: #3e3e3e;
+      background: rgba(255,255,255,0.25);
+      border: 1px solid rgba(255,255,255,0.45);
+      border-radius: 14px;
+      box-shadow:
+        0 4px 12px rgba(0,0,0,0.08),
+        inset 0 1px 0 rgba(255,255,255,0.6);
+      text-shadow: 0 1px 0 rgba(255,255,255,0.4);
+      text-align: center;
+      user-select: none;
+    }
+    .btn:hover:not(:disabled) {
+      background: rgba(255,255,255,0.4);
+      border-color: rgba(255,255,255,0.6);
+      transform: translateY(-2px);
+      box-shadow:
+        0 6px 18px rgba(0,0,0,0.12),
+        inset 0 1px 0 rgba(255,255,255,0.7);
+    }
+    .btn:active:not(:disabled) { transform: translateY(0) scale(0.98); }
+    .btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    .btn.primary {
+      background: rgba(62,138,62,0.45);
+      color: #fff;
+      text-shadow: 0 1px 0 rgba(0,0,0,0.3);
+    }
+    .btn.primary:hover:not(:disabled) {
+      background: rgba(62,138,62,0.6);
+    }
+    .btn.danger {
+      background: rgba(180,60,60,0.4);
+      color: #fff;
+      text-shadow: 0 1px 0 rgba(0,0,0,0.3);
+    }
+    .btn.danger:hover:not(:disabled) {
+      background: rgba(180,60,60,0.55);
+    }
+    .log-area {
+      width: 100%;
+      background: rgba(255,255,255,0.2);
+      border: 1px solid rgba(255,255,255,0.35);
+      border-radius: 14px;
+      padding: 1rem;
+      font-family: "Consolas", "Monaco", monospace;
+      font-size: 13px;
+      line-height: 1.6;
+      white-space: pre-wrap;
+      word-break: break-all;
+      max-height: 55vh;
+      overflow-y: auto;
+      color: #2e2e2e;
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      box-shadow:
+        inset 2px -2px 1px -1px rgba(255,255,255,0.7),
+        inset -2px 2px 1px -1px rgba(255,255,255,0.7),
+        inset 0 0 2px rgba(0,0,0,0.3);
+      text-shadow: 0 1px 0 rgba(255,255,255,0.3);
+    }
+    .log-area::-webkit-scrollbar { width: 6px; }
+    .log-area::-webkit-scrollbar-track { background: transparent; }
+    .log-area::-webkit-scrollbar-thumb {
+      background: rgba(62,62,62,0.3);
+      border-radius: 3px;
+    }
+    .log-area::-webkit-scrollbar-thumb:hover { background: rgba(62,62,62,0.5); }
+    .info-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 0.6rem;
+      margin-bottom: 0.8rem;
+    }
+    .info-item {
+      padding: 0.6rem 0.9rem;
+      background: rgba(255,255,255,0.25);
+      border: 1px solid rgba(255,255,255,0.4);
+      border-radius: 12px;
+      font-size: 13px;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.6);
+    }
+    .info-item .label {
+      color: #555;
+      font-size: 12px;
+      display: block;
+      margin-bottom: 2px;
+    }
+    .info-item .value {
+      color: #1a1a1a;
+      font-weight: bold;
+      font-family: "Consolas", "Monaco", monospace;
+      word-break: break-all;
+    }
+    .info-item .value.yes { color: #1e6b1e; }
+    .info-item .value.no { color: #8a3a3a; }
+    .links {
+      text-align: center;
+      margin-top: 1rem;
+      font-size: 14px;
+    }
+    .links a {
+      display: inline-block;
+      padding: 0.7rem 1.6rem;
+      color: #3e3e3e;
+      text-decoration: none;
+      background: rgba(255,255,255,0.15);
+      border: 1px solid rgba(255,255,255,0.35);
+      border-radius: 14px;
+      box-shadow:
+        0 4px 12px rgba(0,0,0,0.08),
+        inset 0 1px 0 rgba(255,255,255,0.5);
+      text-shadow: 0 1px 0 rgba(255,255,255,0.4);
+    }
+    .links a:hover {
+      background: rgba(255,255,255,0.25);
+      border-color: rgba(255,255,255,0.5);
+      transform: translateY(-2px);
+      box-shadow:
+        0 6px 18px rgba(0,0,0,0.12),
+        inset 0 1px 0 rgba(255,255,255,0.6);
+    }
+    .links a:active { transform: translateY(0) scale(0.98); }
+    .tip {
+      font-size: 13px;
+      color: #444;
+      line-height: 1.7;
+      padding: 0.8rem 1rem;
+      background: rgba(255,255,255,0.2);
+      border: 1px solid rgba(255,255,255,0.35);
+      border-radius: 12px;
+      margin-bottom: 0.8rem;
+      text-shadow: 0 1px 0 rgba(255,255,255,0.4);
+    }
+    .tip b { color: #2a2a2a; }
+  </style>
+</head>
+<body>
+  <h1>MTK BROM 连接工具</h1>
+
+  <div class="panel">
+    <div class="step-info" id="step-info">就绪。点击「连接设备」开始。</div>
+
+    <div class="btn-row">
+      <div class="btn primary" id="btn-connect">连接设备</div>
+      <div class="btn danger" id="btn-disconnect" style="display:none;">断开</div>
+    </div>
+
+    <div class="tip">
+      <b>进入 BROM 模式方法：</b>关机后，按住音量上/下键（或所有硬件按键），插入 USB 连接电脑。
+      BROM 窗口期很短，请在此模式下点击「连接设备」并在弹窗中选择 MediaTek 设备（VID=0x0E8D）。
+      需使用 Chrome/Edge 等支持 WebUSB 的浏览器。
+    </div>
+
+    <div class="info-grid" id="info-grid"></div>
+
+    <div class="log-area" id="log"></div>
+  </div>
+
+  <div class="links">
+    <a href="/">返回首页</a>
+  </div>
+
+  <script src="../Assets/mtk.js"></script>
+  <script>
+  (function() {
+    "use strict";
+
+    const logEl = document.getElementById("log");
+    const stepEl = document.getElementById("step-info");
+    const btnConnect = document.getElementById("btn-connect");
+    const btnDisconnect = document.getElementById("btn-disconnect");
+    const infoGrid = document.getElementById("info-grid");
+
+    let client = null;
+
+    function log(msg) {
+      const ts = new Date().toLocaleTimeString("zh-CN", { hour12: false });
+      logEl.textContent += "[" + ts + "] " + msg + "\n";
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    function setStep(msg) {
+      stepEl.textContent = msg;
+    }
+
+    function hex(v) {
+      return "0x" + (v >>> 0).toString(16).toUpperCase();
+    }
+
+    function addInfo(label, value, cls) {
+      const item = document.createElement("div");
+      item.className = "info-item";
+      const lbl = document.createElement("span");
+      lbl.className = "label";
+      lbl.textContent = label;
+      const val = document.createElement("span");
+      val.className = "value" + (cls ? " " + cls : "");
+      val.textContent = value;
+      item.appendChild(lbl);
+      item.appendChild(val);
+      infoGrid.appendChild(item);
+    }
+
+    function clearInfo() {
+      infoGrid.innerHTML = "";
+    }
+
+    function renderInfo(info) {
+      clearInfo();
+      addInfo("VID", hex(info.vid));
+      addInfo("PID", hex(info.pid));
+      addInfo("HW Code", hex(info.hwcode));
+      addInfo("HW Version", hex(info.hwver));
+      if (info.hwSubCode !== undefined) addInfo("HW SubCode", hex(info.hwSubCode));
+      if (info.swver !== undefined) addInfo("SW Version", hex(info.swver));
+      if (info.fwver !== undefined) addInfo("FW Version", hex(info.fwver));
+      addInfo("BL Version", info.blver !== undefined ? hex(info.blver) : "-");
+      addInfo("BROM Version", info.bromver !== undefined ? hex(info.bromver) : "-");
+      addInfo("BROM 模式", info.isBrom ? "是" : "否", info.isBrom ? "yes" : "no");
+
+      if (info.targetConfig) {
+        const tc = info.targetConfig;
+        addInfo("Target Config", hex(tc.raw));
+        addInfo("SBC", tc.sbc ? "开" : "关", tc.sbc ? "yes" : "no");
+        addInfo("SLA", tc.sla ? "开" : "关", tc.sla ? "yes" : "no");
+        addInfo("DAA", tc.daa ? "开" : "关", tc.daa ? "yes" : "no");
+        addInfo("Root Cert", tc.cert ? "需要" : "不需要", tc.cert ? "yes" : "no");
+        addInfo("Mem Read", tc.memread ? "需鉴权" : "自由", tc.memread ? "yes" : "no");
+        addInfo("Mem Write", tc.memwrite ? "需鉴权" : "自由", tc.memwrite ? "yes" : "no");
+      }
+    }
+
+    async function connect() {
+      btnConnect.disabled = true;
+      try {
+        setStep("请在浏览器弹窗中选择 MediaTek 设备...");
+        log("请求 WebUSB 设备 (VID=0x0E8D)...");
+        const transport = await Mtk.WebUSB.Transport.open();
+        log("设备已打开: VID=" + hex(transport.device.vendorId) +
+            " PID=" + hex(transport.device.productId));
+
+        client = new Mtk.Client(transport);
+        Mtk.Opt.debug = true;
+
+        setStep("正在握手（若卡住请重新插拔设备进入 BROM）...");
+        log("开始 BROM 握手 (0xA0 0x0A 0x50 0x05)...");
+        const info = await client.connect();
+
+        log("[+] 握手成功，设备信息已读取");
+        renderInfo(info);
+        setStep(info.isBrom ? "已连接 BROM 模式" : "已连接 (非 BROM)");
+
+        btnConnect.style.display = "none";
+        btnDisconnect.style.display = "";
+      } catch (e) {
+        log("[!] 错误: " + (e.message || e));
+        setStep("连接失败，请重试");
+        if (client) {
+          try { await client.close(); } catch (_) {}
+          client = null;
+        }
+      } finally {
+        btnConnect.disabled = false;
+      }
+    }
+
+    async function disconnect() {
+      if (client) {
+        try {
+          await client.close();
+          log("设备已断开");
+        } catch (e) {
+          log("断开错误: " + (e.message || e));
+        }
+        client = null;
+      }
+      clearInfo();
+      btnConnect.style.display = "";
+      btnDisconnect.style.display = "none";
+      setStep("已断开");
+    }
+
+    btnConnect.addEventListener("click", connect);
+    btnDisconnect.addEventListener("click", disconnect);
+
+    log("MTK BROM WebUSB 驱动已加载");
+    log("支持设备: VID=0x0E8D, PID=0x0003 (BROM) / Preloader");
+  })();
+  </script>
+</body>
+</html>
