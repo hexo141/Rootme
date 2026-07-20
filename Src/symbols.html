@@ -6,6 +6,13 @@
   <title>Rootme 符号提取</title>
   <link rel="stylesheet" href="Assets/modal.css" />
   <style>
+    @font-face {
+      font-family: 'Noto Sans CJK SC';
+      src: url('Assets/NotoSansCJKsc-Regular.ttf') format('truetype');
+      font-weight: normal;
+      font-style: normal;
+    }
+
     * {
       margin: 0;
       padding: 0;
@@ -16,7 +23,7 @@
     }
 
     body {
-      font-family: "微软雅黑", "PingFang SC", sans-serif;
+      font-family: 'Noto Sans CJK SC', '微软雅黑', 'PingFang SC', sans-serif;
       background-image: url("https://t.alcy.cc/ycy");
       background-size: cover;
       background-repeat: no-repeat;
@@ -33,6 +40,8 @@
 
     /* ---- 主面板 (参考 FK_Selinux_Qualcomm) ---- */
     .panel {
+      position: relative;
+      z-index: 1;
       width: 100%;
       max-width: 520px;
       background: rgba(255, 255, 255, 0.15);
@@ -77,6 +86,8 @@
 
     /* ---- 拖放区域 (参考 .start-btn 玻璃拟态) ---- */
     .drop-zone {
+      position: relative;
+      z-index: 1;
       width: 100%;
       height: 200px;
       border-radius: 20px;
@@ -537,6 +548,14 @@
         fileInput.value = '';
       });
 
+    })();
+  </script>
+  <script src="Assets/liquid-glass.js"></script>
+  <script>
+    (function() {
+      if (window.liquidGlassAPI && typeof window.liquidGlassAPI.applyLiquidGlass === 'function') {
+        window._liquidGlasses = window.liquidGlassAPI.applyLiquidGlass('.panel, .drop-zone');
+      }
     })();
   </script>
 

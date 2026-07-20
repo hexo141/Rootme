@@ -1,9 +1,23 @@
+function applyModalGlass(overlay) {
+  if (window.liquidGlassAPI && typeof window.liquidGlassAPI.applyLiquidGlass === 'function') {
+    overlay._modalGlasses = window.liquidGlassAPI.applyLiquidGlass('.modal-btn', { borderRadius: '14px' });
+  }
+}
+function destroyModalGlass(overlay) {
+  if (overlay._modalGlasses) {
+    if (window.liquidGlassAPI && typeof window.liquidGlassAPI.destroyAll === 'function') {
+      window.liquidGlassAPI.destroyAll(overlay._modalGlasses);
+    }
+    overlay._modalGlasses = null;
+  }
+}
 function customAlert(message) {
   return new Promise((resolve) => {
     const overlay = document.createElement("div");
     overlay.className = "modal-overlay";
     overlay.innerHTML = '<div class="modal-card"><div class="modal-msg">' + String(message).replace(/</g,"&lt;").replace(/>/g,"&gt;") + '</div><div class="modal-btns"><button class="modal-btn modal-btn-primary" id="modal-ok">确定</button></div></div>';
     document.body.appendChild(overlay);
+    applyModalGlass(overlay);
     overlay.querySelector("#modal-ok").onclick = () => { closeOverlay(overlay, () => resolve()); };
   });
 }

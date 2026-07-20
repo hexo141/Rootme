@@ -5,6 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Rootme 漏洞页面</title>
   <style>
+    @font-face {
+      font-family: 'Noto Sans CJK SC';
+      src: url('Src/Assets/NotoSansCJKsc-Regular.ttf') format('truetype');
+      font-weight: normal;
+      font-style: normal;
+    }
+
     * {
       margin: 0;
       padding: 0;
@@ -125,6 +132,8 @@
     }
 
     .start-btn {
+      position: relative;
+      z-index: 1;
       padding: 1.2rem 2.5rem;
       display: flex;
       align-items: center;
@@ -155,7 +164,7 @@
 
     .start-btn span {
       font-size: 28px;
-      font-family: "微软雅黑", serif;
+      font-family: 'Noto Sans CJK SC', '微软雅黑', sans-serif;
       color: #3e3e3e;
       white-space: nowrap;
       text-shadow: 0 1px 0 rgba(255, 255, 255, 0.5);
@@ -198,6 +207,22 @@
         </svg>
       </div>
     </a>
+    <a class="start-btn" href="Sources/CVE-2025-21479_Exploit.bin" download>
+      <span>安卓骁龙GPU漏洞(CVE-2025-21479)</span>
+      <div class="btn-icon">
+        <svg viewBox="0 0 24 24">
+          <path d="M8 5v14l11-7z"/>
+        </svg>
+      </div>
+    </a>
   </div>
+  <script src="Src/Assets/liquid-glass.js"></script>
+  <script>
+    (function() {
+      if (window.liquidGlassAPI && typeof window.liquidGlassAPI.applyLiquidGlass === 'function') {
+        window._liquidGlasses = window.liquidGlassAPI.applyLiquidGlass('.start-btn');
+      }
+    })();
+  </script>
 </body>
 </html>
