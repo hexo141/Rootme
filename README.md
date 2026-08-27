@@ -1,5 +1,5 @@
 # Rootme
-
+本项目不再长期维护！！！
 Android 设备 Firefox 浏览器漏洞利用页面集合。利用 [CVE-2026-23274](https://github.com/NebuSec/CyberMeowfia) (Firefox JIT Type Confusion) 获取 shell，再利用 [CVE-2026-43499](https://github.com/lonStack/CVE-2026-43499)执行内核提权。
 
 > **免责声明**：本项目仅用于学习和研究。只能在您拥有的设备上运行，且应提前备份。
